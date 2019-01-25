@@ -1,6 +1,7 @@
+/* globals System, document */
 import fs from 'fs';
 import path from 'path';
-import sass from 'sass.js';
+import sass from '@node/node-sass';
 
 import CssAssetCopier from 'css-asset-copier';
 
@@ -33,47 +34,6 @@ function stringifyStyle(css, minify) {
   return `[\n${code}\n].join('\\n')`;
 }
 
-function loadFile(file) {
-  return new Promise((resolve, reject) => {
-    fs.readFile(file, { encoding: 'UTF-8' }, (err, data) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(data);
-      }
-    });
-  });
-}
-
-function fromFileURL(url) {
-  const address = decodeURIComponent(url.replace(/^file:(\/+)?/i, ''));
-  return path.sep === '/' ? `/${address}` : address.replace(/\//g, '\\');
-}
-
-// intercept file loading requests (@import directive) from libsass
-sass.importer(async (request, done) => {
-  // Currently only supporting scss imports due to
-  // https://github.com/sass/libsass/issues/1695
-  let content;
-  let resolved;
-  let readImportPath;
-  let readPartialPath;
-  try {
-    resolved = await resolvePath(request);
-    const partialUrl = resolved.replace(/\/([^/]*)$/, '/_$1');
-    readImportPath = fromFileURL(resolved);
-    readPartialPath = fromFileURL(partialUrl);
-    content = await loadFile(readPartialPath);
-  } catch (e) {
-    try {
-      content = await loadFile(readImportPath);
-    } catch (er) {
-      return done({ error: er });
-    }
-  }
-  return done({ content, path: resolved });
-});
-
 export default async function sassBuilder(loads, compileOpts, outputOpts) {
   const pluginOptions = System.sassPluginOptions || {};
 
@@ -85,19 +45,29 @@ export default async function sassBuilder(loads, compileOpts, outputOpts) {
 
     // compile module
     const urlBase = `${path.dirname(load.address)}/`;
-    let options = {};
+    const options = {
+      outputStyle: compileOpts.minify ? 'compressed' : 'expanded',
+      indentedSyntax: load.address.endsWith('.sass'),
+      includePaths: [],
+    };
     if (pluginOptions.sassOptions) {
-      options = Object.assign({}, pluginOptions.sassOptions);
+      Object.assign(options, pluginOptions.sassOptions);
     }
-    options.style = compileOpts.minify ? sass.style.compressed : sass.style.expanded;
+    options.includePaths.unshift(urlBase);
+    options.outputStyle = compileOpts.minify ? 'compressed' : 'expanded';
     options.indentedSyntax = load.address.endsWith('.sass');
-    options.importer = { urlBase };
-    let { status, text, formatted } = await new Promise(resolve => {  // eslint-disable-line
-      sass.compile(load.source, options, resolve);
+    options.outFile = outputOpts.outFile;
+    options.file = load.name;
+
+    let text = await new Promise((resolve, reject) => {
+      sass.render(options, (err, res) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(res.css.toString());
+        }
+      });
     });
-    if (status !== 0) {
-      throw formatted;
-    }
 
     // rewrite urls and copy assets if enabled
     if (pluginOptions.rewriteUrl) {
